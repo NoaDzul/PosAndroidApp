@@ -1,5 +1,7 @@
 package com.example.project1.ui.report
+
 import android.content.Context
+import android.os.Environment
 import android.util.Log
 import android.widget.Toast
 import com.example.project1.data.local.entities.Customer
@@ -7,7 +9,9 @@ import com.example.project1.data.local.entities.Payment
 import com.example.project1.data.local.entities.Sale
 import com.example.project1.ui.util.formatDate
 import org.apache.poi.ss.usermodel.BorderStyle
+import org.apache.poi.ss.usermodel.FillPatternType
 import org.apache.poi.ss.usermodel.HorizontalAlignment
+import org.apache.poi.ss.usermodel.IndexedColors
 import org.apache.poi.xssf.usermodel.XSSFWorkbook
 import java.io.File
 import java.io.FileOutputStream
@@ -16,27 +20,42 @@ fun exportToExcel(
     context: Context,
     sales: List<Sale>,
     customers: List<Customer>,
-    allPayments: List<Payment> // Cambiado de Map a List para que coincida con tu pantalla
-) {
+    allPayments: List<Payment>
+): File? {
     val workbook = XSSFWorkbook()
-    val sheet = workbook.createSheet("Reporte de Deudas")
+    val sheet = workbook.createSheet("Reporte General de Cobranza")
 
-    // Agrupamos los pagos por saleId internamente para facilitar la búsqueda
-    val paymentsMap = allPayments.groupBy { it.saleId }
-
-    // Estilo de encabezado
+    // 1. ESTILOS
     val headerFont = workbook.createFont().apply {
         setBold(true)
+        color = IndexedColors.WHITE.getIndex()
     }
 
     val headerStyle = workbook.createCellStyle().apply {
         setFont(headerFont)
         alignment = HorizontalAlignment.CENTER
-        borderBottom = BorderStyle.THIN
+        fillForegroundColor = IndexedColors.DARK_GREEN.getIndex()
+        fillPattern = FillPatternType.SOLID_FOREGROUND
+        borderBottom = BorderStyle.MEDIUM
     }
 
-    // Crear encabezados
-    val headers = listOf("Cliente", "Fecha Venta", "Total", "Saldo Pendiente", "Fecha Último Abono", "Monto Último Abono")
+    val currencyStyle = workbook.createCellStyle().apply {
+        val format = workbook.createDataFormat()
+        dataFormat = format.getFormat("$#,##0.00")
+        alignment = HorizontalAlignment.RIGHT
+    }
+
+    // 2. ENCABEZADOS (Añadimos "Total Abonado" y "Detalle de Pagos")
+    val headers = listOf(
+        "Cliente",
+        "Inicio Deuda",
+        "Monto Original",
+        "Total Abonado",
+        "Saldo Pendiente",
+        "Estado",
+        "Historial de Pagos (Fecha: Monto)"
+    )
+
     val headerRow = sheet.createRow(0)
     headers.forEachIndexed { i, title ->
         headerRow.createCell(i).apply {
@@ -45,43 +64,72 @@ fun exportToExcel(
         }
     }
 
-    // Llenar datos
+    // 3. AGRUPAR PAGOS
+    val paymentsMap = allPayments.groupBy { it.saleId }
+
+    // 4. LLENAR DATOS
     sales.forEachIndexed { index, sale ->
         val row = sheet.createRow(index + 1)
-        val customerName = customers.find { it.id == sale.customerId }?.name ?: "ID: ${sale.customerId}"
+        val customer = customers.find { it.id == sale.customerId }
+        val salePayments = paymentsMap[sale.id]?.sortedBy { it.date } ?: emptyList()
 
-        // Buscamos los abonos de esta venta en el mapa que creamos arriba
-        // Ordenamos por fecha para obtener el más reciente
-        val salePayments = paymentsMap[sale.id]?.sortedByDescending { it.date } ?: emptyList()
-        val lastP = salePayments.firstOrNull()
+        val totalAbonado = salePayments.sumOf { it.amount }
 
-        row.createCell(0).setCellValue(customerName)
+        // Columna 0: Cliente
+        row.createCell(0).setCellValue(customer?.name ?: "ID: ${sale.customerId}")
+
+        // Columna 1: Fecha Inicio
         row.createCell(1).setCellValue(formatDate(sale.date))
-        row.createCell(2).setCellValue(sale.saleTotal)
-        row.createCell(3).setCellValue(sale.remainingBalance)
-        row.createCell(4).setCellValue(lastP?.let { formatDate(it.date) } ?: "Sin abonos")
-        row.createCell(5).setCellValue(lastP?.amount ?: 0.0)
+
+        // Columna 2: Monto Original
+        row.createCell(2).apply {
+            setCellValue(sale.saleTotal)
+            cellStyle = currencyStyle
+        }
+
+        // Columna 3: Total Abonado (Calculado)
+        row.createCell(3).apply {
+            setCellValue(totalAbonado)
+            cellStyle = currencyStyle
+        }
+
+        // Columna 4: Saldo Pendiente
+        row.createCell(4).apply {
+            setCellValue(sale.remainingBalance)
+            cellStyle = currencyStyle
+        }
+
+        // Columna 5: Estado Visual
+        val statusText = if (sale.remainingBalance <= 0) "LIQUIDADO" else "PENDIENTE"
+        row.createCell(5).setCellValue(statusText)
+
+        // Columna 6: HISTORIAL DETALLADO (Aquí concatenamos todos los abonos)
+        // Ejemplo: "01/05: $10.00 | 05/05: $20.00"
+        val historyText = salePayments.joinToString(" | ") { p ->
+            "${formatDate(p.date)}: $${String.format("%.2f", p.amount)}"
+        }
+        row.createCell(6).setCellValue(historyText.ifEmpty { "Sin movimientos" })
     }
 
-    sheet.setColumnWidth(0, 20 * 256) // Cliente (20 caracteres)
+    // 5. AJUSTE DE COLUMNAS
+    sheet.setColumnWidth(0, 25 * 256) // Cliente
     sheet.setColumnWidth(1, 15 * 256) // Fecha
-    sheet.setColumnWidth(2, 12 * 256) // Total
-    sheet.setColumnWidth(3, 12 * 256) // Saldo
-    sheet.setColumnWidth(4, 20 * 256) // Último Abono
-    sheet.setColumnWidth(5, 12 * 256) // Monto
+    sheet.setColumnWidth(2, 15 * 256) // Monto Original
+    sheet.setColumnWidth(3, 15 * 256) // Total Abonado
+    sheet.setColumnWidth(4, 15 * 256) // Saldo
+    sheet.setColumnWidth(5, 12 * 256) // Estado
+    sheet.setColumnWidth(6, 60 * 256) // Historial (Más ancho para que quepan los textos)
 
-
-    // Guardar archivo
+    // 6. GUARDAR
     try {
         val fileName = "Reporte_Cobranza_${System.currentTimeMillis()}.xlsx"
-        val file = File(context.getExternalFilesDir(null), fileName)
+        val downloadsDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+        val file = File(downloadsDir, fileName)
 
         FileOutputStream(file).use { workbook.write(it) }
-        Toast.makeText(context, "Reporte guardado con éxito", Toast.LENGTH_LONG).show()
-        Log.d("EXCEL", "Archivo guardado en: ${file.absolutePath}")
+        return file // <--- DEVOLVEMOS EL ARCHIVO
     } catch (e: Exception) {
-        Log.e("EXCEL_ERROR", "Error al guardar: ${e.message}")
-        Toast.makeText(context, "Error al generar reporte", Toast.LENGTH_SHORT).show()
+        return null
     } finally {
         workbook.close()
     }

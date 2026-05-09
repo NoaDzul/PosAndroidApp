@@ -9,6 +9,7 @@ import androidx.room.Update
 import com.example.project1.data.local.entities.Payment
 import com.example.project1.data.local.entities.Sale
 import com.example.project1.data.local.entities.SaleItem
+import com.example.project1.data.local.entities.SaleItemWithProduct
 import com.example.project1.data.local.enums.SaleStatus
 import kotlinx.coroutines.flow.Flow
 
@@ -80,4 +81,22 @@ interface SalesDao {
     @Query("SELECT * FROM payments")
     fun getAllPayments(): Flow<List<Payment>>
 
+    // Busca si el cliente tiene una deuda pendiente (Saldo > 0)
+    @Query("SELECT * FROM sales WHERE customerId = :cId AND remainingBalance > 0 LIMIT 1")
+    suspend fun getActiveDebtByCustomer(cId: Long): Sale?
+
+    // Busca si un producto específico ya existe en una venta determinada
+    @Query("SELECT * FROM sale_items WHERE saleId = :sId AND productId = :pId LIMIT 1")
+    suspend fun getItemInSale(sId: Long, pId: Long): SaleItem?
+
+    @Update
+    suspend fun updateSaleItem(item: SaleItem)
+
+    // Dentro de SalesDao interface
+    @Transaction
+    @Query("SELECT * FROM sale_items WHERE saleId = :saleId")
+    fun getItemsWithProductBySale(saleId: Long): Flow<List<SaleItemWithProduct>>
+
+    @Query("SELECT * FROM sales WHERE remainingBalance <= 0 ORDER BY date DESC")
+    fun getCompletedSales(): Flow<List<Sale>>
 }

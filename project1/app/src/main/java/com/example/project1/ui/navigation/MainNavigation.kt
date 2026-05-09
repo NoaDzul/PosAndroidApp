@@ -2,6 +2,7 @@ package com.example.project1.ui.navigation
 
 import androidx.compose.runtime.Composable
 import androidx.navigation.compose.*
+import com.example.project1.ui.screens.CompletedSalesScreen
 import com.example.project1.ui.screens.CustomerCrudScreen // Cambiado para usar el CRUD completo
 import com.example.project1.ui.screens.MainMenuScreen
 import com.example.project1.ui.screens.NewSaleScreen
@@ -20,7 +21,8 @@ fun MainNavigation(viewModel: POSViewModel) {
                 onNavigateToCustomers = { navController.navigate("customers") },
                 onNavigateToProducts = { navController.navigate("products") },
                 onNavigateToPayments = { navController.navigate("payments") },
-                onNavigateToNewSale = { navController.navigate("new_sale") }
+                onNavigateToNewSale = { navController.navigate("new_sale") },
+                onNavigateToCompletedSales = { navController.navigate("completed_sales") }
             )
         }
 
@@ -45,6 +47,14 @@ fun MainNavigation(viewModel: POSViewModel) {
         // 4. Módulo de Pagos
         composable("new_sale") {
             NewSaleScreen(
+                viewModel = viewModel,
+                onNavigateBack = { navController.popBackStack() }
+            )
+        }
+
+        // Nueva pantalla de Historial
+        composable("completed_sales") {
+            CompletedSalesScreen(
                 viewModel = viewModel,
                 onNavigateBack = { navController.popBackStack() }
             )

@@ -155,7 +155,6 @@ fun NewSaleScreen(viewModel: POSViewModel, onNavigateBack: () -> Unit) {
             }
         }
 
-        // --- DIÁLOGOS ---
 
         // 1. DIÁLOGO DE COBRO (Calcula Cambio o Deuda)
         if (showPaymentDialog) {

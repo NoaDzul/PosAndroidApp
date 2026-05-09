@@ -1,6 +1,5 @@
 package com.example.project1.ui.viewmodel
 
-import android.util.Log
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
@@ -13,15 +12,15 @@ import com.example.project1.data.local.dao.SalesDao
 import com.example.project1.data.local.entities.Customer
 import com.example.project1.data.local.entities.Payment
 import com.example.project1.data.local.entities.Product
-import com.example.project1.data.local.enums.PaymentMethod
-import kotlinx.coroutines.launch
 import com.example.project1.data.local.entities.Sale
 import com.example.project1.data.local.entities.SaleItem
+import com.example.project1.data.local.enums.PaymentMethod
 import com.example.project1.data.local.enums.SaleStatus
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.launch
 
 class POSViewModel(
     private val customerDao: CustomerDao,
@@ -30,85 +29,29 @@ class POSViewModel(
     private val saleItemDao: SaleItemDao
 ) : ViewModel() {
 
-    // --- ESTADOS PARA UI (Formularios) ---
+    // --- ESTADOS PARA UI ---
     var customerName by mutableStateOf("")
     var customerPhone by mutableStateOf("")
 
-    // --- FLUJOS DE DATOS (Observables por la UI) ---
+    // --- FLUJOS DE DATOS ---
     val customers: Flow<List<Customer>> = customerDao.getAllCustomers()
     val availableProducts: Flow<List<Product>> = productDao.getAvailableProducts()
     val allSales: Flow<List<Sale>> = salesDao.getAllSales()
+    val pendingSales = salesDao.getPendingSales()
+    val allPayments: StateFlow<List<Payment>> = salesDao.getAllPayments()
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
-    // --- MÓDULO DE CLIENTES ---
-    fun saveCustomer(name: String, phone: String) {
-        viewModelScope.launch {
-            customerDao.insert(Customer(name = name, phone = phone))
-            // Limpiar campos si se usan los estados internos
-            customerName = ""
-            customerPhone = ""
-        }
-    }
-
-    fun updateCustomer(customer: Customer) {
-        viewModelScope.launch {
-            customerDao.update(customer)
-        }
-    }
-
-    fun deleteCustomer(customer: Customer) {
-        viewModelScope.launch {
-            customerDao.delete(customer)
-        }
-    }
-
-    // --- MÓDULO DE PRODUCTOS ---
-    fun saveProduct(name: String, purchase: Double, sale: Double, stock: Int) {
-        viewModelScope.launch {
-            val newProduct = Product(
-                name = name,
-                purchasePrice = purchase,
-                salePrice = sale,
-                stock = stock
-            )
-            productDao.insert(newProduct)
-        }
-    }
-
-    fun updateProduct(product: Product) {
-        viewModelScope.launch {
-            productDao.updateProductStock(product) // Usa el método update de tu DAO
-        }
-    }
-
-    fun deleteProduct(product: Product) {
-        viewModelScope.launch {
-            productDao.delete(product) // Asegúrate de tener 'delete' en tu ProductDao
-        }
-    }
-
-
-    //View sale
-    // Lista temporal para el carrito
-    // --- DENTRO DE POSViewModel.kt ---
-
-    // Usamos un Map para que sea más fácil gestionar Producto -> Cantidad
+    // --- CARRITO ---
     var cartItems by mutableStateOf<Map<Product, Int>>(emptyMap())
         private set
 
-    /**
-     * Agrega un producto o incrementa su cantidad validando el stock disponible.
-     */
     fun addToCart(product: Product) {
         val currentQty = cartItems[product] ?: 0
-        // Validación: No permitir agregar más de lo que hay en stock
         if (currentQty < product.stock) {
             cartItems = cartItems + (product to currentQty + 1)
         }
     }
 
-    /**
-     * Reduce la cantidad de un producto. Si llega a 0, lo elimina del carrito.
-     */
     fun removeFromCart(product: Product) {
         val currentQty = cartItems[product] ?: 0
         if (currentQty > 1) {
@@ -118,9 +61,6 @@ class POSViewModel(
         }
     }
 
-    /**
-     * Elimina por completo el producto del carrito (botón basura).
-     */
     fun deleteFromCart(product: Product) {
         cartItems = cartItems - product
     }
@@ -129,35 +69,62 @@ class POSViewModel(
         cartItems = emptyMap()
     }
 
-    /**
-     * Finaliza la venta, guarda en la DB y descuenta el stock real.
-     */
-// --- CORRECCIÓN EN POSViewModel.kt ---
+    // --- LÓGICA DE VENTA ACUMULADA ---
     fun finalizeSale(customer: Customer, initialPaymentAmount: Double, method: PaymentMethod) {
         viewModelScope.launch {
             try {
-                val total = cartItems.entries.sumOf { it.key.salePrice * it.value }
+                val totalCart = cartItems.entries.sumOf { it.key.salePrice * it.value }
 
-                // 1. Crear e insertar la Venta (Encabezado)
-                val newSale = Sale(
-                    customerId = customer.id,
-                    saleTotal = total,
-                    remainingBalance = (total - initialPaymentAmount).coerceAtLeast(0.0),
-                    status = if ((total - initialPaymentAmount) <= 0) SaleStatus.COMPLETED else SaleStatus.PENDING
-                )
-                val saleId = salesDao.insertSale(newSale)
+                // 1. Buscar si el cliente ya tiene una deuda abierta
+                val existingSale = salesDao.getActiveDebtByCustomer(customer.id)
 
-                // 2. GUARDAR DETALLES (Lo nuevo: ¿Qué productos se llevó?)
-                cartItems.forEach { (product, quantity) ->
-                    val detail = SaleItem(
-                        saleId = saleId,
-                        productId = product.id,
-                        quantity = quantity,
-                        priceAtSale = product.salePrice // Guardamos el precio actual
+                val saleId: Long
+                if (existingSale != null) {
+                    // ACTUALIZAR VENTA EXISTENTE
+                    saleId = existingSale.id
+                    val newTotal = existingSale.saleTotal + totalCart
+                    val newBalance = existingSale.remainingBalance + (totalCart - initialPaymentAmount)
+
+                    val updatedSale = existingSale.copy(
+                        saleTotal = newTotal,
+                        remainingBalance = newBalance.coerceAtLeast(0.0),
+                        status = if (newBalance <= 0) SaleStatus.COMPLETED else SaleStatus.PENDING
                     )
-                    salesDao.insertSaleItem(detail)
+                    salesDao.updateSale(updatedSale)
+                } else {
+                    // CREAR NUEVA VENTA
+                    val newSale = Sale(
+                        customerId = customer.id,
+                        saleTotal = totalCart,
+                        remainingBalance = (totalCart - initialPaymentAmount).coerceAtLeast(0.0),
+                        status = if ((totalCart - initialPaymentAmount) <= 0) SaleStatus.COMPLETED else SaleStatus.PENDING,
+                        date = System.currentTimeMillis()
+                    )
+                    saleId = salesDao.insertSale(newSale)
+                }
 
-                    // Aprovechamos el ciclo para descontar el stock
+                // 2. PROCESAR PRODUCTOS (Sumar a la deuda)
+                cartItems.forEach { (product, quantity) ->
+                    val existingItem = salesDao.getItemInSale(saleId, product.id)
+
+                    if (existingItem != null) {
+                        // El producto ya estaba en la deuda, actualizamos cantidad
+                        val updatedItem = existingItem.copy(
+                            quantity = existingItem.quantity + quantity
+                        )
+                        salesDao.updateSaleItem(updatedItem)
+                    } else {
+                        // Producto nuevo para esta deuda
+                        val detail = SaleItem(
+                            saleId = saleId,
+                            productId = product.id,
+                            quantity = quantity,
+                            priceAtSale = product.salePrice
+                        )
+                        salesDao.insertSaleItem(detail)
+                    }
+
+                    // Descontar stock real
                     val updatedProduct = product.copy(stock = product.stock - quantity)
                     productDao.updateProduct(updatedProduct)
                 }
@@ -176,16 +143,43 @@ class POSViewModel(
                 clearCart()
 
             } catch (e: Exception) {
-                android.util.Log.e("POS_ERROR", "Error: ${e.message}")
+                android.util.Log.e("POS_ERROR", "Error en finalizeSale: ${e.message}")
             }
         }
     }
 
-    // En tu POSViewModel.kt
-    fun getPaymentsBySale(saleId: Long) = salesDao.getPaymentsBySale(saleId)
-    fun getItemsBySale(saleId: Long) = salesDao.getItemsBySale(saleId)
+    // --- OTROS MÉTODOS ---
+    fun saveCustomer(name: String, phone: String) {
+        viewModelScope.launch { customerDao.insert(Customer(name = name, phone = phone)) }
+    }
+    // --- DENTRO DE POSViewModel.kt ---
 
-    // Función para registrar abono (ya la teníamos, asegúrate de que use la transacción)
+    /**
+     * Actualiza los datos de un cliente existente (Nombre y Teléfono).
+     */
+    fun updateCustomer(customer: Customer) {
+        viewModelScope.launch {
+            try {
+                customerDao.update(customer)
+            } catch (e: Exception) {
+                android.util.Log.e("POS_ERROR", "Error al actualizar cliente: ${e.message}")
+            }
+        }
+    }
+
+    /**
+     * Elimina un cliente de la base de datos.
+     */
+    fun deleteCustomer(customer: Customer) {
+        viewModelScope.launch {
+            try {
+                customerDao.delete(customer)
+            } catch (e: Exception) {
+                android.util.Log.e("POS_ERROR", "Error al eliminar cliente: ${e.message}")
+            }
+        }
+    }
+
     fun addPayment(saleId: Long, amount: Double, method: PaymentMethod) {
         viewModelScope.launch {
             val payment = Payment(
@@ -198,15 +192,42 @@ class POSViewModel(
         }
     }
 
+    // --- DENTRO DE POSViewModel.kt ---
 
-    // PaymentCollectionScreen
-    // --- POSViewModel.kt ---
-// --- En POSViewModel.kt ---
+    /**
+     * Guarda un nuevo producto en el inventario.
+     */
+    fun saveProduct(name: String, purchase: Double, sale: Double, stock: Int) {
+        viewModelScope.launch {
+            try {
+                val newProduct = Product(
+                    name = name,
+                    purchasePrice = purchase,
+                    salePrice = sale,
+                    stock = stock
+                )
+                productDao.insert(newProduct)
+            } catch (e: Exception) {
+                android.util.Log.e("POS_ERROR", "Error al guardar producto: ${e.message}")
+            }
+        }
+    }
 
-    val pendingSales = salesDao.getPendingSales()
+    fun getPaymentsBySale(saleId: Long) = salesDao.getPaymentsBySale(saleId)
+    fun getItemsBySale(saleId: Long) = salesDao.getItemsBySale(saleId)
 
-    // En POSViewModel.kt
-    val allPayments: StateFlow<List<Payment>> = salesDao.getAllPayments()
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+    // Métodos faltantes de productos para que no de error
+    fun updateProduct(product: Product) = viewModelScope.launch { productDao.updateProduct(product) }
+    fun deleteProduct(product: Product) = viewModelScope.launch { productDao.delete(product) }
+    // Dentro de POSViewModel
+    fun getItemsWithProductBySale(saleId: Long) = salesDao.getItemsWithProductBySale(saleId)
+
+    // Dentro de la clase POSViewModel
+    val completedSales: Flow<List<Sale>> = salesDao.getCompletedSales()
+        .stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.WhileSubscribed(5000),
+            initialValue = emptyList()
+        )
 
 }
