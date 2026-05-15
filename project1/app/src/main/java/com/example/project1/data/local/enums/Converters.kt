@@ -16,4 +16,10 @@ class Converters {
 
     @TypeConverter
     fun toSaleStatus(value: String) = enumValueOf<SaleStatus>(value)
+
+    @TypeConverter
+    fun fromInventoryMovementType(value: InventoryMovementType) = value.name
+
+    @TypeConverter
+    fun toInventoryMovementType(value: String) = enumValueOf<InventoryMovementType>(value)
 }

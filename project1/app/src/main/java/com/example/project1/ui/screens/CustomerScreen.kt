@@ -16,23 +16,39 @@ import androidx.compose.ui.unit.dp
 import com.example.project1.data.local.entities.Customer
 import com.example.project1.ui.viewmodel.POSViewModel
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun CustomerCrudScreen(viewModel: POSViewModel) {
-    // Observar la lista de clientes desde el ViewModel
+fun CustomerCrudScreen(viewModel: POSViewModel, onNavigateBack: () -> Unit) {
     val customers by viewModel.customers.collectAsState(initial = emptyList())
 
-    // Estados para búsqueda y diálogos
     var searchQuery by remember { mutableStateOf("") }
     var showDialog by remember { mutableStateOf(false) }
+    var showBulkDialog by remember { mutableStateOf(false) } // Nuevo: Diálogo masivo
+    var showDeleteConfirm by remember { mutableStateOf(false) } // Nuevo: Confirmación
     var selectedCustomer by remember { mutableStateOf<Customer?>(null) }
+    var customerToDelete by remember { mutableStateOf<Customer?>(null) }
 
-    // Lógica de filtrado en tiempo real
     val filteredCustomers = customers.filter {
-        it.name.contains(searchQuery, ignoreCase = true) ||
-                it.phone.contains(searchQuery)
+        it.name.contains(searchQuery, ignoreCase = true) || it.phone.contains(searchQuery)
     }
 
     Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { Text("Directorio de Clientes", fontWeight = FontWeight.Bold) },
+                navigationIcon = {
+                    IconButton(onClick = onNavigateBack) {
+                        Icon(Icons.Default.ArrowBack, contentDescription = "Volver")
+                    }
+                },
+                actions = {
+                    // Botón para creación masiva
+                    IconButton(onClick = { showBulkDialog = true }) {
+                        Icon(imageVector = Icons.Default.GroupAdd, contentDescription = "Masivo")
+                    }
+                }
+            )
+        },
         floatingActionButton = {
             FloatingActionButton(
                 onClick = {
@@ -50,15 +66,9 @@ fun CustomerCrudScreen(viewModel: POSViewModel) {
             modifier = Modifier
                 .padding(padding)
                 .fillMaxSize()
-                .padding(16.dp)
+                .padding(horizontal = 16.dp)
         ) {
-            Text(
-                text = "Directorio de Clientes",
-                style = MaterialTheme.typography.headlineMedium,
-                fontWeight = FontWeight.Bold
-            )
-
-            Spacer(modifier = Modifier.height(16.dp))
+            Spacer(modifier = Modifier.height(8.dp))
 
             // BUSCADOR
             OutlinedTextField(
@@ -75,28 +85,20 @@ fun CustomerCrudScreen(viewModel: POSViewModel) {
                     }
                 },
                 singleLine = true,
-                shape = RoundedCornerShape(12.dp),
-                colors = OutlinedTextFieldDefaults.colors(
-                    focusedBorderColor = MaterialTheme.colorScheme.primary,
-                    unfocusedBorderColor = Color.Gray.copy(alpha = 0.5f)
-                )
+                shape = RoundedCornerShape(12.dp)
             )
 
             Spacer(modifier = Modifier.height(16.dp))
 
-            // LISTA DE CLIENTES
             if (filteredCustomers.isEmpty()) {
                 Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    Text(
-                        text = if (searchQuery.isEmpty()) "No hay clientes registrados" else "No se encontraron coincidencias",
-                        color = Color.Gray,
-                        style = MaterialTheme.typography.bodyLarge
-                    )
+                    Text(text = "No hay resultados", color = Color.Gray)
                 }
             } else {
                 LazyColumn(
                     verticalArrangement = Arrangement.spacedBy(10.dp),
-                    modifier = Modifier.fillMaxSize()
+                    modifier = Modifier.fillMaxSize(),
+                    contentPadding = PaddingValues(bottom = 80.dp)
                 ) {
                     items(filteredCustomers) { customer ->
                         CustomerItem(
@@ -105,14 +107,17 @@ fun CustomerCrudScreen(viewModel: POSViewModel) {
                                 selectedCustomer = customer
                                 showDialog = true
                             },
-                            onDelete = { viewModel.deleteCustomer(customer) }
+                            onDelete = {
+                                customerToDelete = customer
+                                showDeleteConfirm = true
+                            }
                         )
                     }
                 }
             }
         }
 
-        // DIÁLOGO DE REGISTRO / EDICIÓN
+        // DIÁLOGO INDIVIDUAL
         if (showDialog) {
             CustomerDialog(
                 customer = selectedCustomer,
@@ -121,13 +126,88 @@ fun CustomerCrudScreen(viewModel: POSViewModel) {
                     if (selectedCustomer == null) {
                         viewModel.saveCustomer(name, phone)
                     } else {
-                        viewModel.updateCustomer(selectedCustomer!!.copy(name = name, phone = phone))
+                        viewModel.updateCustomer(
+                            selectedCustomer!!.copy(
+                                name = name,
+                                phone = phone
+                            )
+                        )
                     }
                     showDialog = false
                 }
             )
         }
+
+        // DIÁLOGO MASIVO
+        if (showBulkDialog) {
+            BulkCustomerDialog(
+                onDismiss = { showBulkDialog = false },
+                onConfirm = { namesString ->
+                    // Separar por comas, limpiar espacios y filtrar vacíos
+                    val names = namesString.split(",").map { it.trim() }.filter { it.isNotEmpty() }
+                    names.forEach { name ->
+                        viewModel.saveCustomer(name, "") // Teléfono vacío por defecto
+                    }
+                    showBulkDialog = false
+                }
+            )
+        }
+
+        // DIÁLOGO DE CONFIRMACIÓN PARA ELIMINAR
+        if (showDeleteConfirm) {
+            AlertDialog(
+                onDismissRequest = { showDeleteConfirm = false },
+                title = { Text("Eliminar Cliente") },
+                text = { Text("¿Estás seguro de eliminar a ${customerToDelete?.name}? Esto podría afectar sus reservas activas.") },
+                confirmButton = {
+                    Button(
+                        onClick = {
+                            customerToDelete?.let { viewModel.deleteCustomer(it) }
+                            showDeleteConfirm = false
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
+                    ) { Text("Eliminar") }
+                },
+                dismissButton = {
+                    TextButton(onClick = { showDeleteConfirm = false }) { Text("Cancelar") }
+                }
+            )
+        }
     }
+}
+
+@Composable
+fun BulkCustomerDialog(onDismiss: () -> Unit, onConfirm: (String) -> Unit) {
+    var input by remember { mutableStateOf("") }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Creación Masiva") },
+        text = {
+            Column {
+                Text(
+                    "Escribe los nombres separados por comas:",
+                    style = MaterialTheme.typography.bodySmall
+                )
+                Spacer(Modifier.height(8.dp))
+                OutlinedTextField(
+                    value = input,
+                    onValueChange = { input = it },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(150.dp),
+                    placeholder = { Text("Ej: Juan Perez, Maria Lopez, Pedro...") }
+                )
+            }
+        },
+        confirmButton = {
+            Button(onClick = { onConfirm(input) }, enabled = input.isNotBlank()) {
+                Text("Crear Todos")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Cancelar") }
+        }
+    )
 }
 
 @Composable
@@ -162,10 +242,18 @@ fun CustomerItem(
             }
             Row {
                 IconButton(onClick = onEdit) {
-                    Icon(Icons.Default.Edit, contentDescription = "Editar", tint = Color(0xFF1976D2))
+                    Icon(
+                        Icons.Default.Edit,
+                        contentDescription = "Editar",
+                        tint = Color(0xFF1976D2)
+                    )
                 }
                 IconButton(onClick = onDelete) {
-                    Icon(Icons.Default.Delete, contentDescription = "Eliminar", tint = Color(0xFFD32F2F))
+                    Icon(
+                        Icons.Default.Delete,
+                        contentDescription = "Eliminar",
+                        tint = Color(0xFFD32F2F)
+                    )
                 }
             }
         }

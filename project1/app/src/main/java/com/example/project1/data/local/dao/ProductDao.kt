@@ -13,15 +13,12 @@ interface ProductDao {
     @Insert
     suspend fun insert(product: Product)
 
-    @Query("SELECT * FROM products WHERE stock > 0")
-    fun getAvailableProducts(): Flow<List<Product>>
-
     @Update
-    suspend fun updateProductStock(product: Product)
+    suspend fun updateProduct(product: Product)
 
     @Delete
     suspend fun delete(product: Product)
 
-    @Update
-    suspend fun updateProduct(product: Product)
+    @Query("SELECT * FROM products ORDER BY name ASC")
+    fun getAllProducts(): Flow<List<Product>>
 }
